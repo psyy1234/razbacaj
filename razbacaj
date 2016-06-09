@@ -1,0 +1,227 @@
+#!/bin/sh
+##############################################################################
+##############################################################################
+####
+####
+####    This program is free software: you can redistribute it and/or modify
+####    it under the terms of the GNU General Public License as published by
+####    the Free Software Foundation, either version 3 of the License, or
+####    (at your option) any later version.
+####
+####    This program is distributed in the hope that it will be useful,
+####    but WITHOUT ANY WARRANTY; without even the implied warranty of
+####    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+####    GNU General Public License for more details.
+####
+####    You should have received a copy of the GNU General Public License
+####    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+####
+####
+##############################################################################
+##############################################################################
+#
+# Parameters:
+# -g get file instead of send
+# -s send files
+#
+##############################################################################
+##############################################################################
+#-------------------------------------------------------------------------------------------------
+# Functions
+# print out usage options
+usage()
+{
+echo "Usage: razbacaj [-g/-s] file path_location where_to"
+echo ""
+echo "Parameters:"
+echo " -g get file instead of send"
+echo " -s send files (default)"
+echo " -h help"
+echo ""
+echo "file:"
+echo "   file to be sent/received"
+echo ""
+echo "path_location: "
+echo "   PATH defined in config.conf file"
+echo ""
+echo "where_to: "
+echo "   NODE or CONTAINER defined in config.conf file "
+}
+
+##########################
+# General get/send function
+##########################
+do_send()
+{
+    NODE=$1
+    FILE_ITEM=$2
+    PATH_LOC=$3
+    OUT_CODE=$4
+    
+    PARAMS=`eval echo '${'$NODE'}' 2>/dev/null`
+    
+    ADDRESS=`echo $PARAMS | cut -f1 -d " "`
+    USER=`echo $PARAMS | cut -f2 -d " "`
+    PASS=`echo $PARAMS | cut -f3 -d " "`
+    REMOTE_DIR=`echo $PARAMS | cut -f4 -d " "`
+          
+    if [ "$ADDRESS" = "" -o "$USER" = "" -o "$PASS" = "" -o "$REMOTE_DIR" = "" ]
+    then
+        return 1
+    fi
+    
+if [ "${sflag}" ]
+then
+/usr/bin/expect <<EOD
+spawn scp ${FILE_ITEM} ${USER}@${ADDRESS}:${REMOTE_DIR}${PATH_LOC}
+expect "Password:"
+send "${PASS}\n"
+set timeout 7200
+expect EOD
+EOD
+elif [ "${gflag}" ]
+then
+/usr/bin/expect <<EOD
+spawn scp ${USER}@${ADDRESS}:${REMOTE_DIR}${PATH_LOC}/${FILE_ITEM} ./
+expect "Password:"
+send "${PASS}\n"
+set timeout 7200
+expect EOD
+EOD
+fi
+
+return 0
+}
+
+PROGRAM=`basename $0`
+PROG_DIR=`dirname $0`
+CONF_FILE=${PROG_DIR}/config.conf
+
+if [ -s $CONF_FILE ]
+then
+    . $CONF_FILE
+fi
+#Initialise flags
+gflag=
+sflag=
+hflag=
+
+# since we don't want getopts to generate error
+# messages, but want this script to issue its
+# own messages, we will put, in the option list, a
+# leading ':' v---here to silence getopts.
+while getopts ":gsh" FOUND
+do
+  case $FOUND in
+  g)    gflag=1
+        ;;
+  s)    sflag=1
+        ;;
+  h)    hflag=1
+        ;;
+  \:)   printf "ERROR: argument missing from -%s option\n" $OPTARG
+        usage
+        exit 1
+        ;;
+  \?)   printf "ERROR: unknown option: -%s\n" $OPTARG
+        usage
+        exit 1
+        ;;
+   esac >&2
+done
+shift $(($OPTIND - 1))
+
+if [ "${hflag}" ]
+then
+  usage
+  exit 0
+fi
+
+#Both flags!
+if [ "${gflag}" -a "${sflag}" ]
+then
+  echo "Cannot both send and receive"
+  exit 3
+fi
+
+# If no flags are present
+if [ ! "${gflag}" -a ! "${sflag}" ]
+then
+  sflag=1
+  echo "NO flag was chosen, SEND is assumed!"
+fi
+
+if [ $# -lt 2 ]
+then
+  usage;
+  exit 0;
+fi
+
+FILE=($1)
+echo "File array: <${FILE}>"
+PATH_LOC=$2
+PINS=$3
+
+
+#--------------------------------------------------------------------------------------------------------------------
+# Evaluate PATH_LOC variable
+#--------------------------------------------------------------------------------------------------------------------
+
+EVAL_PATH=`eval echo '${'$PATH_LOC'}' 2>/dev/null`
+if [ "$EVAL_PATH" = "" ]
+then
+  echo 'PATH not defined in config.conf file, using input path!'
+else
+  PATH_LOC=${EVAL_PATH}
+fi
+
+#--------------------------------------------------------------------------------------------------------------------
+echo ""
+echo "#######################################"
+echo "${PINS} parameter "
+if [ "$PINS" = "" ]
+then
+   echo "where_to option cannot be empty! "
+   echo "#######################################"
+   exit -1
+fi
+
+echo "location: ${PATH_LOC} "
+echo "#######################################"
+echo ""
+
+for i in ${FILE[@]}; do
+  FILE_ITEM=$i
+  
+  ##evaluate input PINS variable
+  EVAL_PINS=`eval echo '${'$PINS'}' 2>/dev/null`
+  PARSING=`echo $EVAL_PINS | cut -f1 -d ":"`
+  
+  ###if CONTAINER we need to loop and evaluate each NODE separately
+  if [ "$PARSING" = "C" ]
+  then
+      for ITEM in `echo $EVAL_PINS | cut -f2 -d ":"`
+      do
+          do_send ${ITEM} ${FILE_ITEM} ${PATH_LOC}
+          RT_CODE=$?
+          
+          if [ $RT_CODE -ne 0 ]
+          then
+              echo "invalid NODE ${ITEM} in CONTAINER. Skipping."  
+          fi
+          
+      done
+      
+  else
+      do_send ${PINS} ${FILE_ITEM} ${PATH_LOC}
+      RT_CODE=$?
+          
+      if [ $RT_CODE -ne 0 ]
+      then
+          echo "invalid NODE ${PINS}. Exit."
+          exit -2
+      fi
+  fi
+
+done
+exit 0;
